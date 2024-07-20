@@ -11,6 +11,9 @@ import tempfile
 import json
 import botocore
 import pandas as pd
+from pdf2image import convert_from_bytes
+from PIL import Image
+import io
 
 def check_aws_credentials(access_key, secret_key, region):
     try:
@@ -44,7 +47,6 @@ def extract_table_data(table_blocks, blocks_map):
                         rows[row_index].append('')
                     cell_text = safe_get(cell, 'Text', '')
                     if not cell_text:
-                        # If 'Text' is not present, try to get it from child relationships
                         for cell_relationship in safe_get(cell, 'Relationships', []):
                             if safe_get(cell_relationship, 'Type') == 'CHILD':
                                 for word_id in safe_get(cell_relationship, 'Ids', []):
@@ -54,26 +56,16 @@ def extract_table_data(table_blocks, blocks_map):
                     rows[row_index][col_index] = cell_text
     return rows
 
-def process_document(image_path, textract_client):
-    with open(image_path, 'rb') as document:
-        image_bytes = document.read()
-    
+def process_image(image_bytes, textract_client):
     response = textract_client.analyze_document(
         Document={'Bytes': image_bytes},
         FeatureTypes=['TABLES', 'FORMS']
     )
     
-    # Save the response as a JSON file
-    response_json_path = image_path + '.json'
-    with open(response_json_path, 'w') as json_file:
-        json.dump(response, json_file, indent=4)
-    
-    # Extract text, tables, and form data
     extracted_text = ""
     tables = []
     form_data = {}
 
-    # Create a dictionary to map block IDs to blocks
     blocks_map = {safe_get(block, 'Id'): block for block in safe_get(response, 'Blocks', [])}
 
     for block in safe_get(response, 'Blocks', []):
@@ -95,10 +87,31 @@ def process_document(image_path, textract_client):
             if key and value:
                 form_data[key] = value
     
-    return extracted_text, tables, form_data, response_json_path, response
+    return extracted_text, tables, form_data
 
-st.title("AWS Textract with Streamlit v7 - Detailed Debugging")
-st.write("Enter your AWS credentials and upload an image to extract text, tables, and form data using AWS Textract.")
+def process_document(file_bytes, file_type, textract_client):
+    all_text = ""
+    all_tables = []
+    all_form_data = {}
+
+    if file_type == 'pdf':
+        images = convert_from_bytes(file_bytes)
+        for i, image in enumerate(images):
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='PNG')
+            img_byte_arr = img_byte_arr.getvalue()
+            
+            page_text, page_tables, page_form_data = process_image(img_byte_arr, textract_client)
+            all_text += f"Page {i+1}:\n{page_text}\n\n"
+            all_tables.extend(page_tables)
+            all_form_data.update(page_form_data)
+    else:  # For image files
+        all_text, all_tables, all_form_data = process_image(file_bytes, textract_client)
+
+    return all_text, all_tables, all_form_data
+
+st.title("AWS Textract with Streamlit v8 - PDF and Image Processing")
+st.write("Enter your AWS credentials and upload a PDF or image file to extract text, tables, and form data using AWS Textract.")
 
 # AWS Credentials Input
 aws_access_key = st.text_input("AWS Access Key ID", type="password")
@@ -115,22 +128,19 @@ if st.button("Confirm Credentials"):
 
 # File Upload (only show if credentials are valid)
 if st.session_state.get('credentials_valid', False):
-    uploaded_file = st.file_uploader("Choose an image file", type=["jpg", "jpeg", "png", "pdf"])
+    uploaded_file = st.file_uploader("Choose a PDF or image file", type=["pdf", "jpg", "jpeg", "png"])
 
     if uploaded_file is not None:
-        temp_file_path = None
-        response_json_path = None
+        file_bytes = uploaded_file.read()
+        file_type = uploaded_file.type.split('/')[-1]
+
         try:
-            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                temp_file.write(uploaded_file.getvalue())
-                temp_file_path = temp_file.name
-            
             textract_client = boto3.client('textract',
                                            aws_access_key_id=aws_access_key,
                                            aws_secret_access_key=aws_secret_key,
                                            region_name=aws_region)
             
-            extracted_text, tables, form_data, response_json_path, raw_response = process_document(temp_file_path, textract_client)
+            extracted_text, tables, form_data = process_document(file_bytes, file_type, textract_client)
             
             st.subheader("Extracted Text:")
             st.text(extracted_text)
@@ -149,37 +159,12 @@ if st.session_state.get('credentials_valid', False):
             
             st.subheader("Form Data:")
             st.json(form_data)
-            
-            st.subheader("Download Full JSON Response:")
-            with open(response_json_path, 'rb') as f:
-                st.download_button(
-                    label="Download JSON",
-                    data=f,
-                    file_name='textract_response.json',
-                    mime='application/json'
-                )
-
-            # Debug information
-            st.subheader("Debug Information:")
-            st.json(raw_response)
-
-            # Display structure of the first few blocks
-            st.subheader("Structure of First Few Blocks:")
-            for i, block in enumerate(raw_response.get('Blocks', [])[:5]):
-                st.write(f"Block {i}:")
-                st.json(block)
 
         except botocore.exceptions.ClientError as e:
             st.error(f"AWS Error: {str(e)}")
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
-            st.error("Please check the JSON response for more details.")
-        finally:
-            # Clean up the temporary files
-            if temp_file_path and os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
-            if response_json_path and os.path.exists(response_json_path):
-                os.unlink(response_json_path)
+            st.error("Please check the error message for more details.")
 else:
     st.info("Please enter and confirm your AWS credentials to proceed.")
 
