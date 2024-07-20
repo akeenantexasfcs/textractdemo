@@ -15,6 +15,14 @@ from pdf2image import convert_from_bytes
 from PIL import Image
 import io
 
+def check_poppler():
+    try:
+        from pdf2image.exceptions import PDFPageCountError
+        convert_from_bytes(b"%PDF-1.0")  # Attempt to convert an empty PDF
+        return True
+    except Exception:
+        return False
+
 def check_aws_credentials(access_key, secret_key, region):
     try:
         session = boto3.Session(
@@ -95,23 +103,41 @@ def process_document(file_bytes, file_type, textract_client):
     all_form_data = {}
 
     if file_type == 'pdf':
-        images = convert_from_bytes(file_bytes)
-        for i, image in enumerate(images):
-            img_byte_arr = io.BytesIO()
-            image.save(img_byte_arr, format='PNG')
-            img_byte_arr = img_byte_arr.getvalue()
-            
-            page_text, page_tables, page_form_data = process_image(img_byte_arr, textract_client)
-            all_text += f"Page {i+1}:\n{page_text}\n\n"
-            all_tables.extend(page_tables)
-            all_form_data.update(page_form_data)
+        if not check_poppler():
+            st.error("Poppler is not installed or not in PATH. Please install poppler and ensure it's in your system PATH.")
+            st.info("Installation instructions:\n"
+                    "- Ubuntu/Debian: sudo apt-get install poppler-utils\n"
+                    "- macOS: brew install poppler\n"
+                    "- Windows: Download from https://github.com/oschwartz10612/poppler-windows/releases/ "
+                    "and add the bin folder to your system PATH")
+            return None, None, None
+
+        try:
+            images = convert_from_bytes(file_bytes)
+            for i, image in enumerate(images):
+                img_byte_arr = io.BytesIO()
+                image.save(img_byte_arr, format='PNG')
+                img_byte_arr = img_byte_arr.getvalue()
+                
+                page_text, page_tables, page_form_data = process_image(img_byte_arr, textract_client)
+                all_text += f"Page {i+1}:\n{page_text}\n\n"
+                all_tables.extend(page_tables)
+                all_form_data.update(page_form_data)
+        except Exception as e:
+            st.error(f"Error processing PDF: {str(e)}")
+            return None, None, None
     else:  # For image files
         all_text, all_tables, all_form_data = process_image(file_bytes, textract_client)
 
     return all_text, all_tables, all_form_data
 
-st.title("AWS Textract with Streamlit v8 - PDF and Image Processing")
+st.title("AWS Textract with Streamlit - PDF and Image Processing")
 st.write("Enter your AWS credentials and upload a PDF or image file to extract text, tables, and form data using AWS Textract.")
+
+# Check for poppler installation
+if not check_poppler():
+    st.warning("Poppler is not installed or not in PATH. PDF processing may not work.")
+    st.info("To process PDFs, please install poppler and ensure it's in your system PATH.")
 
 # AWS Credentials Input
 aws_access_key = st.text_input("AWS Access Key ID", type="password")
@@ -142,23 +168,26 @@ if st.session_state.get('credentials_valid', False):
             
             extracted_text, tables, form_data = process_document(file_bytes, file_type, textract_client)
             
-            st.subheader("Extracted Text:")
-            st.text(extracted_text)
-            
-            st.subheader("Detected Tables:")
-            if tables:
-                for i, table in enumerate(tables):
-                    st.write(f"Table {i+1}:")
-                    if table:
-                        df = pd.DataFrame(table)
-                        st.dataframe(df)
-                    else:
-                        st.write("Empty table detected")
+            if extracted_text is not None:
+                st.subheader("Extracted Text:")
+                st.text(extracted_text)
+                
+                st.subheader("Detected Tables:")
+                if tables:
+                    for i, table in enumerate(tables):
+                        st.write(f"Table {i+1}:")
+                        if table:
+                            df = pd.DataFrame(table)
+                            st.dataframe(df)
+                        else:
+                            st.write("Empty table detected")
+                else:
+                    st.write("No tables detected")
+                
+                st.subheader("Form Data:")
+                st.json(form_data)
             else:
-                st.write("No tables detected")
-            
-            st.subheader("Form Data:")
-            st.json(form_data)
+                st.error("Failed to process the document. Please check the error messages above.")
 
         except botocore.exceptions.ClientError as e:
             st.error(f"AWS Error: {str(e)}")
