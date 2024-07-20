@@ -11,6 +11,7 @@ import tempfile
 import json
 import botocore
 import pandas as pd
+import time
 
 def check_aws_credentials(access_key, secret_key, region):
     try:
@@ -54,17 +55,41 @@ def extract_table_data(table_blocks, blocks_map):
                     rows[row_index][col_index] = cell_text
     return rows
 
-def process_document(image_path, textract_client):
-    with open(image_path, 'rb') as document:
-        image_bytes = document.read()
-    
-    response = textract_client.analyze_document(
-        Document={'Bytes': image_bytes},
+def start_document_analysis(textract_client, file_bytes):
+    response = textract_client.start_document_analysis(
+        DocumentLocation={'Bytes': file_bytes},
         FeatureTypes=['TABLES', 'FORMS']
     )
+    return response['JobId']
+
+def get_document_analysis(textract_client, job_id):
+    response = textract_client.get_document_analysis(JobId=job_id)
+    status = response['JobStatus']
+    while status == 'IN_PROGRESS':
+        time.sleep(5)
+        response = textract_client.get_document_analysis(JobId=job_id)
+        status = response['JobStatus']
+    return response if status == 'SUCCEEDED' else None
+
+def process_document(file_path, textract_client):
+    with open(file_path, 'rb') as document:
+        file_bytes = document.read()
+    
+    _, file_extension = os.path.splitext(file_path)
+    if file_extension.lower() == '.pdf':
+        job_id = start_document_analysis(textract_client, file_bytes)
+        response = get_document_analysis(textract_client, job_id)
+    else:
+        response = textract_client.analyze_document(
+            Document={'Bytes': file_bytes},
+            FeatureTypes=['TABLES', 'FORMS']
+        )
+    
+    if response is None:
+        raise Exception("Document analysis failed")
     
     # Save the response as a JSON file
-    response_json_path = image_path + '.json'
+    response_json_path = file_path + '.json'
     with open(response_json_path, 'w') as json_file:
         json.dump(response, json_file, indent=4)
     
@@ -97,8 +122,8 @@ def process_document(image_path, textract_client):
     
     return extracted_text, tables, form_data, response_json_path, response
 
-st.title("AWS Textract with Streamlit v7 - Detailed Debugging")
-st.write("Enter your AWS credentials and upload an image to extract text, tables, and form data using AWS Textract.")
+st.title("AWS Textract with Streamlit v8 - PDF Support")
+st.write("Enter your AWS credentials and upload an image or PDF file to extract text, tables, and form data using AWS Textract.")
 
 # AWS Credentials Input
 aws_access_key = st.text_input("AWS Access Key ID", type="password")
@@ -115,13 +140,13 @@ if st.button("Confirm Credentials"):
 
 # File Upload (only show if credentials are valid)
 if st.session_state.get('credentials_valid', False):
-    uploaded_file = st.file_uploader("Choose an image file", type=["jpg", "jpeg", "png", "pdf"])
+    uploaded_file = st.file_uploader("Choose an image or PDF file", type=["jpg", "jpeg", "png", "pdf"])
 
     if uploaded_file is not None:
         temp_file_path = None
         response_json_path = None
         try:
-            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as temp_file:
                 temp_file.write(uploaded_file.getvalue())
                 temp_file_path = temp_file.name
             
