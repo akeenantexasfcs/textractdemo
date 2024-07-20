@@ -25,23 +25,33 @@ def check_aws_credentials(access_key, secret_key, region):
     except botocore.exceptions.ClientError:
         return False
 
+def safe_get(dict_obj, key, default=None):
+    """Safely get a value from a dictionary."""
+    return dict_obj.get(key, default)
+
 def extract_table_data(table_blocks, blocks_map):
     rows = []
-    for relationship in table_blocks['Relationships']:
-        if relationship['Type'] == 'CHILD':
-            for child_id in relationship['Ids']:
-                cell = blocks_map[child_id]
-                if cell['BlockType'] == 'CELL':
-                    row_index = cell['RowIndex']
-                    col_index = cell['ColumnIndex']
-                    if len(rows) < row_index:
-                        # Add a new row
+    for relationship in safe_get(table_blocks, 'Relationships', []):
+        if safe_get(relationship, 'Type') == 'CHILD':
+            for child_id in safe_get(relationship, 'Ids', []):
+                cell = blocks_map.get(child_id, {})
+                if safe_get(cell, 'BlockType') == 'CELL':
+                    row_index = safe_get(cell, 'RowIndex', 1) - 1
+                    col_index = safe_get(cell, 'ColumnIndex', 1) - 1
+                    while len(rows) <= row_index:
                         rows.append([])
-                    # Pad the row with empty strings if needed
-                    while len(rows[row_index-1]) < col_index:
-                        rows[row_index-1].append('')
-                    if cell['Text']:
-                        rows[row_index-1].append(cell['Text'])
+                    while len(rows[row_index]) <= col_index:
+                        rows[row_index].append('')
+                    cell_text = safe_get(cell, 'Text', '')
+                    if not cell_text:
+                        # If 'Text' is not present, try to get it from child relationships
+                        for cell_relationship in safe_get(cell, 'Relationships', []):
+                            if safe_get(cell_relationship, 'Type') == 'CHILD':
+                                for word_id in safe_get(cell_relationship, 'Ids', []):
+                                    word = blocks_map.get(word_id, {})
+                                    cell_text += safe_get(word, 'Text', '') + ' '
+                        cell_text = cell_text.strip()
+                    rows[row_index][col_index] = cell_text
     return rows
 
 def process_document(image_path, textract_client):
@@ -64,29 +74,30 @@ def process_document(image_path, textract_client):
     form_data = {}
 
     # Create a dictionary to map block IDs to blocks
-    blocks_map = {block['Id']: block for block in response['Blocks']}
+    blocks_map = {safe_get(block, 'Id'): block for block in safe_get(response, 'Blocks', [])}
 
-    for block in response['Blocks']:
-        if block['BlockType'] == 'LINE':
-            extracted_text += block['Text'] + "\n"
-        elif block['BlockType'] == 'TABLE':
+    for block in safe_get(response, 'Blocks', []):
+        block_type = safe_get(block, 'BlockType')
+        if block_type == 'LINE':
+            extracted_text += safe_get(block, 'Text', '') + "\n"
+        elif block_type == 'TABLE':
             tables.append(extract_table_data(block, blocks_map))
-        elif block['BlockType'] == 'KEY_VALUE_SET' and 'KEY' in block['EntityTypes']:
+        elif block_type == 'KEY_VALUE_SET' and 'KEY' in safe_get(block, 'EntityTypes', []):
             key = None
             value = None
-            for relationship in block['Relationships']:
-                if relationship['Type'] == 'VALUE':
-                    for value_id in relationship['Ids']:
-                        value = blocks_map[value_id]['Text']
-                elif relationship['Type'] == 'CHILD':
-                    for child_id in relationship['Ids']:
-                        key = blocks_map[child_id]['Text']
+            for relationship in safe_get(block, 'Relationships', []):
+                if safe_get(relationship, 'Type') == 'VALUE':
+                    for value_id in safe_get(relationship, 'Ids', []):
+                        value = safe_get(blocks_map.get(value_id, {}), 'Text', '')
+                elif safe_get(relationship, 'Type') == 'CHILD':
+                    for child_id in safe_get(relationship, 'Ids', []):
+                        key = safe_get(blocks_map.get(child_id, {}), 'Text', '')
             if key and value:
                 form_data[key] = value
     
-    return extracted_text, tables, form_data, response_json_path
+    return extracted_text, tables, form_data, response_json_path, response
 
-st.title("AWS Textract with Streamlit v5 - Robust Table Detection")
+st.title("AWS Textract with Streamlit v7 - Detailed Debugging")
 st.write("Enter your AWS credentials and upload an image to extract text, tables, and form data using AWS Textract.")
 
 # AWS Credentials Input
@@ -119,7 +130,7 @@ if st.session_state.get('credentials_valid', False):
                                            aws_secret_access_key=aws_secret_key,
                                            region_name=aws_region)
             
-            extracted_text, tables, form_data, response_json_path = process_document(temp_file_path, textract_client)
+            extracted_text, tables, form_data, response_json_path, raw_response = process_document(temp_file_path, textract_client)
             
             st.subheader("Extracted Text:")
             st.text(extracted_text)
@@ -129,7 +140,7 @@ if st.session_state.get('credentials_valid', False):
                 for i, table in enumerate(tables):
                     st.write(f"Table {i+1}:")
                     if table:
-                        df = pd.DataFrame(table[1:], columns=table[0] if table[0] else [f"Column {j+1}" for j in range(len(table[1]))])
+                        df = pd.DataFrame(table)
                         st.dataframe(df)
                     else:
                         st.write("Empty table detected")
@@ -147,6 +158,17 @@ if st.session_state.get('credentials_valid', False):
                     file_name='textract_response.json',
                     mime='application/json'
                 )
+
+            # Debug information
+            st.subheader("Debug Information:")
+            st.json(raw_response)
+
+            # Display structure of the first few blocks
+            st.subheader("Structure of First Few Blocks:")
+            for i, block in enumerate(raw_response.get('Blocks', [])[:5]):
+                st.write(f"Block {i}:")
+                st.json(block)
+
         except botocore.exceptions.ClientError as e:
             st.error(f"AWS Error: {str(e)}")
         except Exception as e:
