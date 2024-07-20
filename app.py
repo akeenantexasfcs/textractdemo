@@ -25,13 +25,23 @@ def check_aws_credentials(access_key, secret_key, region):
     except botocore.exceptions.ClientError:
         return False
 
-def extract_table_data(table):
+def extract_table_data(table_blocks, blocks_map):
     rows = []
-    for row in table['Rows']:
-        cells = []
-        for cell in row['Cells']:
-            cells.append(cell.get('Text', ''))
-        rows.append(cells)
+    for relationship in table_blocks['Relationships']:
+        if relationship['Type'] == 'CHILD':
+            for child_id in relationship['Ids']:
+                cell = blocks_map[child_id]
+                if cell['BlockType'] == 'CELL':
+                    row_index = cell['RowIndex']
+                    col_index = cell['ColumnIndex']
+                    if len(rows) < row_index:
+                        # Add a new row
+                        rows.append([])
+                    # Pad the row with empty strings if needed
+                    while len(rows[row_index-1]) < col_index:
+                        rows[row_index-1].append('')
+                    if cell['Text']:
+                        rows[row_index-1].append(cell['Text'])
     return rows
 
 def process_document(image_path, textract_client):
@@ -53,20 +63,30 @@ def process_document(image_path, textract_client):
     tables = []
     form_data = {}
 
+    # Create a dictionary to map block IDs to blocks
+    blocks_map = {block['Id']: block for block in response['Blocks']}
+
     for block in response['Blocks']:
         if block['BlockType'] == 'LINE':
             extracted_text += block['Text'] + "\n"
         elif block['BlockType'] == 'TABLE':
-            tables.append(extract_table_data(block))
+            tables.append(extract_table_data(block, blocks_map))
         elif block['BlockType'] == 'KEY_VALUE_SET' and 'KEY' in block['EntityTypes']:
-            key = block['Relationships'][0]['Value']
-            value_id = block['Relationships'][1]['Ids'][0]
-            value = next(b for b in response['Blocks'] if b['Id'] == value_id)['Text']
-            form_data[key] = value
+            key = None
+            value = None
+            for relationship in block['Relationships']:
+                if relationship['Type'] == 'VALUE':
+                    for value_id in relationship['Ids']:
+                        value = blocks_map[value_id]['Text']
+                elif relationship['Type'] == 'CHILD':
+                    for child_id in relationship['Ids']:
+                        key = blocks_map[child_id]['Text']
+            if key and value:
+                form_data[key] = value
     
     return extracted_text, tables, form_data, response_json_path
 
-st.title("AWS Textract with Streamlit v4 - Table Detection")
+st.title("AWS Textract with Streamlit v5 - Robust Table Detection")
 st.write("Enter your AWS credentials and upload an image to extract text, tables, and form data using AWS Textract.")
 
 # AWS Credentials Input
@@ -105,10 +125,16 @@ if st.session_state.get('credentials_valid', False):
             st.text(extracted_text)
             
             st.subheader("Detected Tables:")
-            for i, table in enumerate(tables):
-                st.write(f"Table {i+1}:")
-                df = pd.DataFrame(table[1:], columns=table[0])
-                st.dataframe(df)
+            if tables:
+                for i, table in enumerate(tables):
+                    st.write(f"Table {i+1}:")
+                    if table:
+                        df = pd.DataFrame(table[1:], columns=table[0] if table[0] else [f"Column {j+1}" for j in range(len(table[1]))])
+                        st.dataframe(df)
+                    else:
+                        st.write("Empty table detected")
+            else:
+                st.write("No tables detected")
             
             st.subheader("Form Data:")
             st.json(form_data)
@@ -125,6 +151,7 @@ if st.session_state.get('credentials_valid', False):
             st.error(f"AWS Error: {str(e)}")
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
+            st.error("Please check the JSON response for more details.")
         finally:
             # Clean up the temporary files
             if temp_file_path and os.path.exists(temp_file_path):
