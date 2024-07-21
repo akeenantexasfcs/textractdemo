@@ -56,90 +56,131 @@ def extract_table_data(table_blocks, blocks_map):
     return rows
 
 def upload_to_s3(s3_client, file_bytes, bucket_name, object_name):
-    s3_client.put_object(Body=file_bytes, Bucket=bucket_name, Key=object_name)
+    try:
+        s3_client.put_object(Body=file_bytes, Bucket=bucket_name, Key=object_name)
+        st.success(f"Successfully uploaded file to S3: {bucket_name}/{object_name}")
+    except botocore.exceptions.ClientError as e:
+        st.error(f"Failed to upload file to S3: {str(e)}")
+        raise
 
 def start_document_analysis(textract_client, bucket_name, object_name):
-    response = textract_client.start_document_analysis(
-        DocumentLocation={'S3Object': {'Bucket': bucket_name, 'Name': object_name}},
-        FeatureTypes=['TABLES', 'FORMS']
-    )
-    return response['JobId']
+    try:
+        response = textract_client.start_document_analysis(
+            DocumentLocation={'S3Object': {'Bucket': bucket_name, 'Name': object_name}},
+            FeatureTypes=['TABLES', 'FORMS']
+        )
+        return response['JobId']
+    except botocore.exceptions.ClientError as e:
+        st.error(f"Failed to start document analysis: {str(e)}")
+        raise
 
 def get_document_analysis(textract_client, job_id):
     pages = []
     next_token = None
-    while True:
-        if next_token:
-            response = textract_client.get_document_analysis(JobId=job_id, NextToken=next_token)
-        else:
-            response = textract_client.get_document_analysis(JobId=job_id)
-        
-        pages.append(response)
-        next_token = response.get('NextToken')
-        
-        if not next_token:
-            break
+    max_attempts = 60  # Increase this for larger documents
+    attempt = 0
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    while attempt < max_attempts:
+        try:
+            if next_token:
+                response = textract_client.get_document_analysis(JobId=job_id, NextToken=next_token)
+            else:
+                response = textract_client.get_document_analysis(JobId=job_id)
+            
+            status = response['JobStatus']
+            status_text.text(f"Processing document... Status: {status}")
+            
+            if status == 'SUCCEEDED':
+                pages.append(response)
+                next_token = response.get('NextToken')
+                if not next_token:
+                    status_text.text("Document processing complete!")
+                    progress_bar.progress(1.0)
+                    break
+            elif status == 'FAILED':
+                raise Exception(f"Textract job failed: {response.get('StatusMessage')}")
+            else:  # IN_PROGRESS
+                time.sleep(5)
+                attempt += 1
+                progress_bar.progress(attempt / max_attempts)
+        except Exception as e:
+            st.error(f"An error occurred while getting document analysis: {str(e)}")
+            raise
+    
+    if attempt >= max_attempts:
+        raise Exception("Textract job timed out")
     
     return pages
 
 def process_document(file_path, textract_client, s3_client, bucket_name):
-    with open(file_path, 'rb') as document:
-        file_bytes = document.read()
-    
-    _, file_extension = os.path.splitext(file_path)
-    object_name = os.path.basename(file_path)
-    
-    if file_extension.lower() == '.pdf':
-        upload_to_s3(s3_client, file_bytes, bucket_name, object_name)
-        job_id = start_document_analysis(textract_client, bucket_name, object_name)
-        response_pages = get_document_analysis(textract_client, job_id)
-    else:
-        response = textract_client.analyze_document(
-            Document={'Bytes': file_bytes},
-            FeatureTypes=['TABLES', 'FORMS']
-        )
-        response_pages = [response]
-    
-    if not response_pages:
-        raise Exception("Document analysis failed")
-    
-    # Save the response as a JSON file
-    response_json_path = file_path + '.json'
-    with open(response_json_path, 'w') as json_file:
-        json.dump(response_pages, json_file, indent=4)
-    
-    # Extract text, tables, and form data
-    extracted_text = ""
-    tables = []
-    form_data = {}
+    try:
+        with open(file_path, 'rb') as document:
+            file_bytes = document.read()
+        
+        _, file_extension = os.path.splitext(file_path)
+        object_name = os.path.basename(file_path)
+        
+        if file_extension.lower() == '.pdf':
+            st.info("Uploading document to S3...")
+            upload_to_s3(s3_client, file_bytes, bucket_name, object_name)
+            st.info("Starting Textract job...")
+            job_id = start_document_analysis(textract_client, bucket_name, object_name)
+            st.info(f"Textract job started with ID: {job_id}")
+            response_pages = get_document_analysis(textract_client, job_id)
+        else:
+            response = textract_client.analyze_document(
+                Document={'Bytes': file_bytes},
+                FeatureTypes=['TABLES', 'FORMS']
+            )
+            response_pages = [response]
+        
+        if not response_pages:
+            raise Exception("Document analysis failed")
+        
+        # Save the response as a JSON file
+        response_json_path = file_path + '.json'
+        with open(response_json_path, 'w') as json_file:
+            json.dump(response_pages, json_file, indent=4)
+        
+        # Extract text, tables, and form data
+        extracted_text = ""
+        tables = []
+        form_data = {}
 
-    # Process all pages
-    for page in response_pages:
-        # Create a dictionary to map block IDs to blocks
-        blocks_map = {safe_get(block, 'Id'): block for block in safe_get(page, 'Blocks', [])}
+        # Process all pages
+        for page in response_pages:
+            # Create a dictionary to map block IDs to blocks
+            blocks_map = {safe_get(block, 'Id'): block for block in safe_get(page, 'Blocks', [])}
 
-        for block in safe_get(page, 'Blocks', []):
-            block_type = safe_get(block, 'BlockType')
-            if block_type == 'LINE':
-                extracted_text += safe_get(block, 'Text', '') + "\n"
-            elif block_type == 'TABLE':
-                tables.append(extract_table_data(block, blocks_map))
-            elif block_type == 'KEY_VALUE_SET' and 'KEY' in safe_get(block, 'EntityTypes', []):
-                key = None
-                value = None
-                for relationship in safe_get(block, 'Relationships', []):
-                    if safe_get(relationship, 'Type') == 'VALUE':
-                        for value_id in safe_get(relationship, 'Ids', []):
-                            value = safe_get(blocks_map.get(value_id, {}), 'Text', '')
-                    elif safe_get(relationship, 'Type') == 'CHILD':
-                        for child_id in safe_get(relationship, 'Ids', []):
-                            key = safe_get(blocks_map.get(child_id, {}), 'Text', '')
-                if key and value:
-                    form_data[key] = value
-    
-    return extracted_text, tables, form_data, response_json_path, response_pages
+            for block in safe_get(page, 'Blocks', []):
+                block_type = safe_get(block, 'BlockType')
+                if block_type == 'LINE':
+                    extracted_text += safe_get(block, 'Text', '') + "\n"
+                elif block_type == 'TABLE':
+                    tables.append(extract_table_data(block, blocks_map))
+                elif block_type == 'KEY_VALUE_SET' and 'KEY' in safe_get(block, 'EntityTypes', []):
+                    key = None
+                    value = None
+                    for relationship in safe_get(block, 'Relationships', []):
+                        if safe_get(relationship, 'Type') == 'VALUE':
+                            for value_id in safe_get(relationship, 'Ids', []):
+                                value = safe_get(blocks_map.get(value_id, {}), 'Text', '')
+                        elif safe_get(relationship, 'Type') == 'CHILD':
+                            for child_id in safe_get(relationship, 'Ids', []):
+                                key = safe_get(blocks_map.get(child_id, {}), 'Text', '')
+                    if key and value:
+                        form_data[key] = value
+        
+        return extracted_text, tables, form_data, response_json_path, response_pages
 
-st.title("AWS Textract with Streamlit v10 - Enhanced Multi-page PDF Support")
+    except Exception as e:
+        st.error(f"An error occurred during document processing: {str(e)}")
+        raise
+
+st.title("AWS Textract with Streamlit v11 - Enhanced Error Handling")
 st.write("Enter your AWS credentials and upload an image or PDF file to extract text, tables, and form data using AWS Textract.")
 
 # AWS Credentials Input
@@ -178,7 +219,8 @@ if st.session_state.get('credentials_valid', False):
                                      aws_secret_access_key=aws_secret_key,
                                      region_name=aws_region)
             
-            extracted_text, tables, form_data, response_json_path, raw_response = process_document(temp_file_path, textract_client, s3_client, s3_bucket_name)
+            with st.spinner("Processing document..."):
+                extracted_text, tables, form_data, response_json_path, raw_response = process_document(temp_file_path, textract_client, s3_client, s3_bucket_name)
             
             st.subheader("Extracted Text:")
             st.text(extracted_text)
@@ -226,7 +268,7 @@ if st.session_state.get('credentials_valid', False):
             st.error(f"AWS Error: {str(e)}")
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
-            st.error("Please check the JSON response for more details.")
+            st.error("Please check the AWS credentials, S3 bucket permissions, and try again.")
         finally:
             # Clean up the temporary files
             if temp_file_path and os.path.exists(temp_file_path):
