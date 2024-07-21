@@ -128,7 +128,7 @@ def process_document(file_path, textract_client, s3_client, bucket_name):
     
     return extracted_text, tables, form_data, response_json_path, response
 
-st.title("AWS Textract with Streamlit v8 - PDF Support")
+st.title("AWS Textract with Streamlit v9 - Enhanced PDF Support")
 st.write("Enter your AWS credentials and upload an image or PDF file to extract text, tables, and form data using AWS Textract.")
 
 # AWS Credentials Input
@@ -173,6 +173,7 @@ if st.session_state.get('credentials_valid', False):
             st.text(extracted_text)
             
             st.subheader("Detected Tables:")
+            st.write(f"Number of tables detected: {len(tables)}")
             if tables:
                 for i, table in enumerate(tables):
                     st.write(f"Table {i+1}:")
@@ -202,7 +203,7 @@ if st.session_state.get('credentials_valid', False):
 
             # Display structure of the first few blocks
             st.subheader("Structure of First Few Blocks:")
-            for i, block in enumerate(raw_response.get('Blocks', [])[:10]):  # Display more blocks for better debug
+            for i, block in enumerate(raw_response.get('Blocks', [])[:10]):  # Display first 10 blocks for debugging
                 st.write(f"Block {i}:")
                 st.json(block)
 
