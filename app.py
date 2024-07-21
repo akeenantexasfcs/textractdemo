@@ -140,47 +140,52 @@ def process_document(file_path, textract_client, s3_client, bucket_name):
         if not response_pages:
             raise Exception("Document analysis failed")
         
-        # Save the response as a JSON file
+        # Extract and combine 'Blocks' from all pages
+        all_blocks = []
+        for page in response_pages:
+            all_blocks.extend(page.get('Blocks', []))
+        
+        # Create a simplified JSON structure
+        simplified_response = {'Blocks': all_blocks}
+        
+        # Save the simplified response as a JSON file
         response_json_path = file_path + '.json'
         with open(response_json_path, 'w') as json_file:
-            json.dump(response_pages, json_file, indent=4)
+            json.dump(simplified_response, json_file, indent=4)
         
         # Extract text, tables, and form data
         extracted_text = ""
         tables = []
         form_data = {}
 
-        # Process all pages
-        for page in response_pages:
-            # Create a dictionary to map block IDs to blocks
-            blocks_map = {safe_get(block, 'Id'): block for block in safe_get(page, 'Blocks', [])}
-
-            for block in safe_get(page, 'Blocks', []):
-                block_type = safe_get(block, 'BlockType')
-                if block_type == 'LINE':
-                    extracted_text += safe_get(block, 'Text', '') + "\n"
-                elif block_type == 'TABLE':
-                    tables.append(extract_table_data(block, blocks_map))
-                elif block_type == 'KEY_VALUE_SET' and 'KEY' in safe_get(block, 'EntityTypes', []):
-                    key = None
-                    value = None
-                    for relationship in safe_get(block, 'Relationships', []):
-                        if safe_get(relationship, 'Type') == 'VALUE':
-                            for value_id in safe_get(relationship, 'Ids', []):
-                                value = safe_get(blocks_map.get(value_id, {}), 'Text', '')
-                        elif safe_get(relationship, 'Type') == 'CHILD':
-                            for child_id in safe_get(relationship, 'Ids', []):
-                                key = safe_get(blocks_map.get(child_id, {}), 'Text', '')
-                    if key and value:
-                        form_data[key] = value
+        # Process all blocks
+        blocks_map = {safe_get(block, 'Id'): block for block in all_blocks}
+        for block in all_blocks:
+            block_type = safe_get(block, 'BlockType')
+            if block_type == 'LINE':
+                extracted_text += safe_get(block, 'Text', '') + "\n"
+            elif block_type == 'TABLE':
+                tables.append(extract_table_data(block, blocks_map))
+            elif block_type == 'KEY_VALUE_SET' and 'KEY' in safe_get(block, 'EntityTypes', []):
+                key = None
+                value = None
+                for relationship in safe_get(block, 'Relationships', []):
+                    if safe_get(relationship, 'Type') == 'VALUE':
+                        for value_id in safe_get(relationship, 'Ids', []):
+                            value = safe_get(blocks_map.get(value_id, {}), 'Text', '')
+                    elif safe_get(relationship, 'Type') == 'CHILD':
+                        for child_id in safe_get(relationship, 'Ids', []):
+                            key = safe_get(blocks_map.get(child_id, {}), 'Text', '')
+                if key and value:
+                    form_data[key] = value
         
-        return extracted_text, tables, form_data, response_json_path, response_pages
+        return extracted_text, tables, form_data, response_json_path, simplified_response
 
     except Exception as e:
         st.error(f"An error occurred during document processing: {str(e)}")
         raise
 
-st.title("AWS Textract with Streamlit v12 - JSON Download First")
+st.title("AWS Textract with Streamlit v13 - Simplified JSON Output")
 st.write("Enter your AWS credentials and upload an image or PDF file to extract text, tables, and form data using AWS Textract.")
 
 # AWS Credentials Input
@@ -220,7 +225,7 @@ if st.session_state.get('credentials_valid', False):
                                      region_name=aws_region)
             
             with st.spinner("Processing document..."):
-                extracted_text, tables, form_data, response_json_path, raw_response = process_document(temp_file_path, textract_client, s3_client, s3_bucket_name)
+                extracted_text, tables, form_data, response_json_path, simplified_response = process_document(temp_file_path, textract_client, s3_client, s3_bucket_name)
             
             # Immediately display the Download JSON button after processing
             st.subheader("Download Full JSON Response:")
@@ -254,15 +259,13 @@ if st.session_state.get('credentials_valid', False):
             
             # Debug information
             st.subheader("Debug Information:")
-            st.write(f"Number of pages processed: {len(raw_response)}")
-            for i, page in enumerate(raw_response):
-                st.write(f"Page {i+1}:")
-                st.json(page)
+            st.write(f"Number of blocks processed: {len(simplified_response['Blocks'])}")
+            st.json(simplified_response)
 
-            # Display structure of the first few blocks of the first page
-            st.subheader("Structure of First Few Blocks (First Page):")
-            first_page_blocks = raw_response[0].get('Blocks', [])[:10]  # Display first 10 blocks of the first page
-            for i, block in enumerate(first_page_blocks):
+            # Display structure of the first few blocks
+            st.subheader("Structure of First Few Blocks:")
+            first_few_blocks = simplified_response['Blocks'][:10]  # Display first 10 blocks
+            for i, block in enumerate(first_few_blocks):
                 st.write(f"Block {i}:")
                 st.json(block)
 
