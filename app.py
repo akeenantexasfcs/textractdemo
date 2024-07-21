@@ -180,7 +180,7 @@ def process_document(file_path, textract_client, s3_client, bucket_name):
         st.error(f"An error occurred during document processing: {str(e)}")
         raise
 
-st.title("AWS Textract with Streamlit v11 - Enhanced Error Handling")
+st.title("AWS Textract with Streamlit v12 - JSON Download First")
 st.write("Enter your AWS credentials and upload an image or PDF file to extract text, tables, and form data using AWS Textract.")
 
 # AWS Credentials Input
@@ -222,6 +222,17 @@ if st.session_state.get('credentials_valid', False):
             with st.spinner("Processing document..."):
                 extracted_text, tables, form_data, response_json_path, raw_response = process_document(temp_file_path, textract_client, s3_client, s3_bucket_name)
             
+            # Immediately display the Download JSON button after processing
+            st.subheader("Download Full JSON Response:")
+            with open(response_json_path, 'rb') as f:
+                st.download_button(
+                    label="Download JSON",
+                    data=f,
+                    file_name='textract_response.json',
+                    mime='application/json'
+                )
+            
+            # Now display the extracted information
             st.subheader("Extracted Text:")
             st.text(extracted_text)
             
@@ -241,15 +252,6 @@ if st.session_state.get('credentials_valid', False):
             st.subheader("Form Data:")
             st.json(form_data)
             
-            st.subheader("Download Full JSON Response:")
-            with open(response_json_path, 'rb') as f:
-                st.download_button(
-                    label="Download JSON",
-                    data=f,
-                    file_name='textract_response.json',
-                    mime='application/json'
-                )
-
             # Debug information
             st.subheader("Debug Information:")
             st.write(f"Number of pages processed: {len(raw_response)}")
