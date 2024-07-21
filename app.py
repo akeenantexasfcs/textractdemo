@@ -55,9 +55,12 @@ def extract_table_data(table_blocks, blocks_map):
                     rows[row_index][col_index] = cell_text
     return rows
 
-def start_document_analysis(textract_client, file_bytes):
+def upload_to_s3(s3_client, file_bytes, bucket_name, object_name):
+    s3_client.put_object(Body=file_bytes, Bucket=bucket_name, Key=object_name)
+
+def start_document_analysis(textract_client, bucket_name, object_name):
     response = textract_client.start_document_analysis(
-        DocumentLocation={'Bytes': file_bytes},
+        DocumentLocation={'S3Object': {'Bucket': bucket_name, 'Name': object_name}},
         FeatureTypes=['TABLES', 'FORMS']
     )
     return response['JobId']
@@ -71,13 +74,16 @@ def get_document_analysis(textract_client, job_id):
         status = response['JobStatus']
     return response if status == 'SUCCEEDED' else None
 
-def process_document(file_path, textract_client):
+def process_document(file_path, textract_client, s3_client, bucket_name):
     with open(file_path, 'rb') as document:
         file_bytes = document.read()
     
     _, file_extension = os.path.splitext(file_path)
+    object_name = os.path.basename(file_path)
+    
     if file_extension.lower() == '.pdf':
-        job_id = start_document_analysis(textract_client, file_bytes)
+        upload_to_s3(s3_client, file_bytes, bucket_name, object_name)
+        job_id = start_document_analysis(textract_client, bucket_name, object_name)
         response = get_document_analysis(textract_client, job_id)
     else:
         response = textract_client.analyze_document(
@@ -129,6 +135,7 @@ st.write("Enter your AWS credentials and upload an image or PDF file to extract 
 aws_access_key = st.text_input("AWS Access Key ID", type="password")
 aws_secret_key = st.text_input("AWS Secret Access Key", type="password")
 aws_region = st.selectbox("AWS Region", ["us-east-2", "us-east-1", "us-west-1", "us-west-2"], index=0)
+s3_bucket_name = st.text_input("S3 Bucket Name")
 
 if st.button("Confirm Credentials"):
     if check_aws_credentials(aws_access_key, aws_secret_key, aws_region):
@@ -155,7 +162,12 @@ if st.session_state.get('credentials_valid', False):
                                            aws_secret_access_key=aws_secret_key,
                                            region_name=aws_region)
             
-            extracted_text, tables, form_data, response_json_path, raw_response = process_document(temp_file_path, textract_client)
+            s3_client = boto3.client('s3',
+                                     aws_access_key_id=aws_access_key,
+                                     aws_secret_access_key=aws_secret_key,
+                                     region_name=aws_region)
+            
+            extracted_text, tables, form_data, response_json_path, raw_response = process_document(temp_file_path, textract_client, s3_client, s3_bucket_name)
             
             st.subheader("Extracted Text:")
             st.text(extracted_text)
@@ -203,8 +215,5 @@ if st.session_state.get('credentials_valid', False):
             # Clean up the temporary files
             if temp_file_path and os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
-            if response_json_path and os.path.exists(response_json_path):
-                os.unlink(response_json_path)
-else:
-    st.info("Please enter and confirm your AWS credentials to proceed.")
+            if response_json_path and os.path.exists(response
 
