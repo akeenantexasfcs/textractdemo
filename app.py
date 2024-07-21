@@ -202,7 +202,7 @@ if st.session_state.get('credentials_valid', False):
 
             # Display structure of the first few blocks
             st.subheader("Structure of First Few Blocks:")
-            for i, block in enumerate(raw_response.get('Blocks', [])[:5]):
+            for i, block in enumerate(raw_response.get('Blocks', [])[:10]):  # Display more blocks for better debug
                 st.write(f"Block {i}:")
                 st.json(block)
 
