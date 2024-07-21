@@ -215,5 +215,8 @@ if st.session_state.get('credentials_valid', False):
             # Clean up the temporary files
             if temp_file_path and os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
-            if response_json_path and os.path.exists(response
+            if response_json_path and os.path.exists(response_json_path):
+                os.unlink(response_json_path)
+else:
+    st.info("Please enter and confirm your AWS credentials to proceed.")
 
