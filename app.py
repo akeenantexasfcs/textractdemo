@@ -13,161 +13,7 @@ import botocore
 import pandas as pd
 import time
 
-def check_aws_credentials(access_key, secret_key, region):
-    try:
-        session = boto3.Session(
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            region_name=region
-        )
-        sts = session.client('sts')
-        sts.get_caller_identity()
-        return True
-    except botocore.exceptions.ClientError:
-        return False
-
-def safe_get(dict_obj, key, default=None):
-    """Safely get a value from a dictionary."""
-    return dict_obj.get(key, default)
-
-def extract_table_data(table_blocks, blocks_map):
-    rows = []
-    for relationship in safe_get(table_blocks, 'Relationships', []):
-        if safe_get(relationship, 'Type') == 'CHILD':
-            for child_id in safe_get(relationship, 'Ids', []):
-                cell = blocks_map.get(child_id, {})
-                if safe_get(cell, 'BlockType') == 'CELL':
-                    row_index = safe_get(cell, 'RowIndex', 1) - 1
-                    col_index = safe_get(cell, 'ColumnIndex', 1) - 1
-                    while len(rows) <= row_index:
-                        rows.append([])
-                    while len(rows[row_index]) <= col_index:
-                        rows[row_index].append('')
-                    cell_text = safe_get(cell, 'Text', '')
-                    if not cell_text:
-                        # If 'Text' is not present, try to get it from child relationships
-                        for cell_relationship in safe_get(cell, 'Relationships', []):
-                            if safe_get(cell_relationship, 'Type') == 'CHILD':
-                                for word_id in safe_get(cell_relationship, 'Ids', []):
-                                    word = blocks_map.get(word_id, {})
-                                    cell_text += safe_get(word, 'Text', '') + ' '
-                        cell_text = cell_text.strip()
-                    rows[row_index][col_index] = cell_text
-    return rows
-
-def upload_to_s3(s3_client, file_bytes, bucket_name, object_name):
-    try:
-        s3_client.put_object(Body=file_bytes, Bucket=bucket_name, Key=object_name)
-        st.success(f"Successfully uploaded file to S3: {bucket_name}/{object_name}")
-    except botocore.exceptions.ClientError as e:
-        st.error(f"Failed to upload file to S3: {str(e)}")
-        raise
-
-def start_document_analysis(textract_client, bucket_name, object_name):
-    try:
-        response = textract_client.start_document_analysis(
-            DocumentLocation={'S3Object': {'Bucket': bucket_name, 'Name': object_name}},
-            FeatureTypes=['TABLES']
-        )
-        return response['JobId']
-    except botocore.exceptions.ClientError as e:
-        st.error(f"Failed to start document analysis: {str(e)}")
-        raise
-
-def get_document_analysis(textract_client, job_id):
-    pages = []
-    next_token = None
-    max_attempts = 60  # Increase this for larger documents
-    attempt = 0
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    while attempt < max_attempts:
-        try:
-            if next_token:
-                response = textract_client.get_document_analysis(JobId=job_id, NextToken=next_token)
-            else:
-                response = textract_client.get_document_analysis(JobId=job_id)
-            
-            status = response['JobStatus']
-            status_text.text(f"Processing document... Status: {status}")
-            
-            if status == 'SUCCEEDED':
-                pages.append(response)
-                next_token = response.get('NextToken')
-                if not next_token:
-                    status_text.text("Document processing complete!")
-                    progress_bar.progress(1.0)
-                    break
-            elif status == 'FAILED':
-                raise Exception(f"Textract job failed: {response.get('StatusMessage')}")
-            else:  # IN_PROGRESS
-                time.sleep(5)
-                attempt += 1
-                progress_bar.progress(attempt / max_attempts)
-        except Exception as e:
-            st.error(f"An error occurred while getting document analysis: {str(e)}")
-            raise
-    
-    if attempt >= max_attempts:
-        raise Exception("Textract job timed out")
-    
-    return pages
-
-def process_document(file_path, textract_client, s3_client, bucket_name):
-    try:
-        with open(file_path, 'rb') as document:
-            file_bytes = document.read()
-        
-        _, file_extension = os.path.splitext(file_path)
-        object_name = os.path.basename(file_path)
-        
-        if file_extension.lower() == '.pdf':
-            st.info("Uploading document to S3...")
-            upload_to_s3(s3_client, file_bytes, bucket_name, object_name)
-            st.info("Starting Textract job...")
-            job_id = start_document_analysis(textract_client, bucket_name, object_name)
-            st.info(f"Textract job started with ID: {job_id}")
-            response_pages = get_document_analysis(textract_client, job_id)
-        else:
-            response = textract_client.analyze_document(
-                Document={'Bytes': file_bytes},
-                FeatureTypes=['TABLES']
-            )
-            response_pages = [response]
-        
-        if not response_pages:
-            raise Exception("Document analysis failed")
-        
-        # Extract and combine 'Blocks' from all pages
-        all_blocks = []
-        for page in response_pages:
-            all_blocks.extend(page.get('Blocks', []))
-        
-        # Create a simplified JSON structure
-        simplified_response = {'Blocks': all_blocks}
-        
-        # Save the simplified response as a JSON file
-        response_json_path = file_path + '.json'
-        with open(response_json_path, 'w') as json_file:
-            json.dump(simplified_response, json_file, indent=4)
-        
-        # Extract tables
-        tables = []
-
-        # Process all blocks
-        blocks_map = {safe_get(block, 'Id'): block for block in all_blocks}
-        for block in all_blocks:
-            block_type = safe_get(block, 'BlockType')
-            if block_type == 'TABLE':
-                tables.append(extract_table_data(block, blocks_map))
-        
-        return tables, response_json_path, simplified_response
-
-    except Exception as e:
-        st.error(f"An error occurred during document processing: {str(e)}")
-        raise
+# ... (keep all the existing functions)
 
 st.title("AWS Textract with Streamlit - Table Extraction")
 st.write("Enter your AWS credentials and upload an image or PDF file to extract tables using AWS Textract.")
@@ -190,9 +36,8 @@ if st.button("Confirm Credentials"):
 if st.session_state.get('credentials_valid', False):
     uploaded_file = st.file_uploader("Choose an image or PDF file", type=["jpg", "jpeg", "png", "pdf"])
 
-    if uploaded_file is not None:
+    if uploaded_file is not None and 'processed' not in st.session_state:
         temp_file_path = None
-        response_json_path = None
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as temp_file:
                 temp_file.write(uploaded_file.getvalue())
@@ -236,19 +81,13 @@ if st.session_state.get('processed', False):
     st.subheader("Download Full JSON Response:")
     json_file_name = st.text_input("Enter JSON file name (without .json extension)", value='textract_response')
     
-    if st.button("Download JSON"):
-        with open(response_json_path, 'rb') as f:
-            st.download_button(
-                label="Download JSON",
-                data=f,
-                file_name=f"{json_file_name}.json" if json_file_name else 'textract_response.json',
-                mime='application/json'
-            )
-        # Clear session state after download to prevent reprocessing
-        st.session_state.processed = False
-        st.session_state.response_json_path = None
-        st.session_state.simplified_response = None
-        st.session_state.tables = None
+    with open(response_json_path, 'rb') as f:
+        st.download_button(
+            label="Download JSON",
+            data=f,
+            file_name=f"{json_file_name}.json" if json_file_name else 'textract_response.json',
+            mime='application/json'
+        )
 
     # Now display the extracted information
     st.subheader("Detected Tables:")
