@@ -67,7 +67,7 @@ def start_document_analysis(textract_client, bucket_name, object_name):
     try:
         response = textract_client.start_document_analysis(
             DocumentLocation={'S3Object': {'Bucket': bucket_name, 'Name': object_name}},
-            FeatureTypes=['TABLES', 'FORMS']
+            FeatureTypes=['TABLES']
         )
         return response['JobId']
     except botocore.exceptions.ClientError as e:
@@ -133,7 +133,7 @@ def process_document(file_path, textract_client, s3_client, bucket_name):
         else:
             response = textract_client.analyze_document(
                 Document={'Bytes': file_bytes},
-                FeatureTypes=['TABLES', 'FORMS']
+                FeatureTypes=['TABLES']
             )
             response_pages = [response]
         
@@ -153,40 +153,24 @@ def process_document(file_path, textract_client, s3_client, bucket_name):
         with open(response_json_path, 'w') as json_file:
             json.dump(simplified_response, json_file, indent=4)
         
-        # Extract text, tables, and form data
-        extracted_text = ""
+        # Extract tables
         tables = []
-        form_data = {}
 
         # Process all blocks
         blocks_map = {safe_get(block, 'Id'): block for block in all_blocks}
         for block in all_blocks:
             block_type = safe_get(block, 'BlockType')
-            if block_type == 'LINE':
-                extracted_text += safe_get(block, 'Text', '') + "\n"
-            elif block_type == 'TABLE':
+            if block_type == 'TABLE':
                 tables.append(extract_table_data(block, blocks_map))
-            elif block_type == 'KEY_VALUE_SET' and 'KEY' in safe_get(block, 'EntityTypes', []):
-                key = None
-                value = None
-                for relationship in safe_get(block, 'Relationships', []):
-                    if safe_get(relationship, 'Type') == 'VALUE':
-                        for value_id in safe_get(relationship, 'Ids', []):
-                            value = safe_get(blocks_map.get(value_id, {}), 'Text', '')
-                    elif safe_get(relationship, 'Type') == 'CHILD':
-                        for child_id in safe_get(relationship, 'Ids', []):
-                            key = safe_get(blocks_map.get(child_id, {}), 'Text', '')
-                if key and value:
-                    form_data[key] = value
         
-        return extracted_text, tables, form_data, response_json_path, simplified_response
+        return tables, response_json_path, simplified_response
 
     except Exception as e:
         st.error(f"An error occurred during document processing: {str(e)}")
         raise
 
-st.title("AWS Textract with Streamlit v13 - Simplified JSON Output")
-st.write("Enter your AWS credentials and upload an image or PDF file to extract text, tables, and form data using AWS Textract.")
+st.title("AWS Textract with Streamlit - Table Extraction")
+st.write("Enter your AWS credentials and upload an image or PDF file to extract tables using AWS Textract.")
 
 # AWS Credentials Input
 aws_access_key = st.text_input("AWS Access Key ID", type="password")
@@ -225,7 +209,7 @@ if st.session_state.get('credentials_valid', False):
                                      region_name=aws_region)
             
             with st.spinner("Processing document..."):
-                extracted_text, tables, form_data, response_json_path, simplified_response = process_document(temp_file_path, textract_client, s3_client, s3_bucket_name)
+                tables, response_json_path, simplified_response = process_document(temp_file_path, textract_client, s3_client, s3_bucket_name)
             
             # Immediately display the Download JSON button after processing
             st.subheader("Download Full JSON Response:")
@@ -238,9 +222,6 @@ if st.session_state.get('credentials_valid', False):
                 )
             
             # Now display the extracted information
-            st.subheader("Extracted Text:")
-            st.text(extracted_text)
-            
             st.subheader("Detected Tables:")
             st.write(f"Number of tables detected: {len(tables)}")
             if tables:
@@ -253,9 +234,6 @@ if st.session_state.get('credentials_valid', False):
                         st.write("Empty table detected")
             else:
                 st.write("No tables detected")
-            
-            st.subheader("Form Data:")
-            st.json(form_data)
             
             # Debug information
             st.subheader("Debug Information:")
