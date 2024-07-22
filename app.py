@@ -211,41 +211,10 @@ if st.session_state.get('credentials_valid', False):
             with st.spinner("Processing document..."):
                 tables, response_json_path, simplified_response = process_document(temp_file_path, textract_client, s3_client, s3_bucket_name)
             
-            # Immediately display the Download JSON button after processing
-            st.subheader("Download Full JSON Response:")
-            with open(response_json_path, 'rb') as f:
-                st.download_button(
-                    label="Download JSON",
-                    data=f,
-                    file_name='textract_response.json',
-                    mime='application/json'
-                )
-            
-            # Now display the extracted information
-            st.subheader("Detected Tables:")
-            st.write(f"Number of tables detected: {len(tables)}")
-            if tables:
-                for i, table in enumerate(tables):
-                    st.write(f"Table {i+1}:")
-                    if table:
-                        df = pd.DataFrame(table)
-                        st.dataframe(df)
-                    else:
-                        st.write("Empty table detected")
-            else:
-                st.write("No tables detected")
-            
-            # Debug information
-            st.subheader("Debug Information:")
-            st.write(f"Number of blocks processed: {len(simplified_response['Blocks'])}")
-            st.json(simplified_response)
-
-            # Display structure of the first few blocks
-            st.subheader("Structure of First Few Blocks:")
-            first_few_blocks = simplified_response['Blocks'][:10]  # Display first 10 blocks
-            for i, block in enumerate(first_few_blocks):
-                st.write(f"Block {i}:")
-                st.json(block)
+            st.session_state.processed = True
+            st.session_state.response_json_path = response_json_path
+            st.session_state.simplified_response = simplified_response
+            st.session_state.tables = tables
 
         except botocore.exceptions.ClientError as e:
             st.error(f"AWS Error: {str(e)}")
@@ -256,8 +225,50 @@ if st.session_state.get('credentials_valid', False):
             # Clean up the temporary files
             if temp_file_path and os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
-            if response_json_path and os.path.exists(response_json_path):
-                os.unlink(response_json_path)
+
+# Show download button and table extraction results only if processing is complete
+if st.session_state.get('processed', False):
+    response_json_path = st.session_state.response_json_path
+    simplified_response = st.session_state.simplified_response
+    tables = st.session_state.tables
+    
+    # JSON file rename input
+    st.subheader("Download Full JSON Response:")
+    json_file_name = st.text_input("Enter JSON file name (without .json extension)", value='textract_response')
+    
+    with open(response_json_path, 'rb') as f:
+        st.download_button(
+            label="Download JSON",
+            data=f,
+            file_name=f"{json_file_name}.json" if json_file_name else 'textract_response.json',
+            mime='application/json'
+        )
+
+    # Now display the extracted information
+    st.subheader("Detected Tables:")
+    st.write(f"Number of tables detected: {len(tables)}")
+    if tables:
+        for i, table in enumerate(tables):
+            st.write(f"Table {i+1}:")
+            if table:
+                df = pd.DataFrame(table)
+                st.dataframe(df)
+            else:
+                st.write("Empty table detected")
+    else:
+        st.write("No tables detected")
+
+    # Debug information
+    st.subheader("Debug Information:")
+    st.write(f"Number of blocks processed: {len(simplified_response['Blocks'])}")
+    st.json(simplified_response)
+
+    # Display structure of the first few blocks
+    st.subheader("Structure of First Few Blocks:")
+    first_few_blocks = simplified_response['Blocks'][:10]  # Display first 10 blocks
+    for i, block in enumerate(first_few_blocks):
+        st.write(f"Block {i}:")
+        st.json(block)
 else:
     st.info("Please enter and confirm your AWS credentials to proceed.")
 
