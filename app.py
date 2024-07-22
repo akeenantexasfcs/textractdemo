@@ -169,6 +169,12 @@ def process_document(file_path, textract_client, s3_client, bucket_name):
         st.error(f"An error occurred during document processing: {str(e)}")
         raise
 
+# Initialize session state
+if 'processed' not in st.session_state:
+    st.session_state.processed = False
+if 'credentials_valid' not in st.session_state:
+    st.session_state.credentials_valid = False
+
 st.title("AWS Textract with Streamlit - Table Extraction")
 st.write("Enter your AWS credentials and upload an image or PDF file to extract tables using AWS Textract.")
 
@@ -187,12 +193,11 @@ if st.button("Confirm Credentials"):
         st.session_state.credentials_valid = False
 
 # File Upload (only show if credentials are valid)
-if st.session_state.get('credentials_valid', False):
+if st.session_state.credentials_valid:
     uploaded_file = st.file_uploader("Choose an image or PDF file", type=["jpg", "jpeg", "png", "pdf"])
 
-    if uploaded_file is not None:
+    if uploaded_file is not None and not st.session_state.processed:
         temp_file_path = None
-        response_json_path = None
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as temp_file:
                 temp_file.write(uploaded_file.getvalue())
@@ -227,7 +232,7 @@ if st.session_state.get('credentials_valid', False):
                 os.unlink(temp_file_path)
 
 # Show download button and table extraction results only if processing is complete
-if st.session_state.get('processed', False):
+if st.session_state.processed:
     response_json_path = st.session_state.response_json_path
     simplified_response = st.session_state.simplified_response
     tables = st.session_state.tables
@@ -269,6 +274,12 @@ if st.session_state.get('processed', False):
     for i, block in enumerate(first_few_blocks):
         st.write(f"Block {i}:")
         st.json(block)
+
+    # Add a button to reset the process
+    if st.button("Process another document"):
+        st.session_state.processed = False
+        st.experimental_rerun()
+
 else:
     st.info("Please enter and confirm your AWS credentials to proceed.")
 
