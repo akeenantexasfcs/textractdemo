@@ -236,13 +236,19 @@ if st.session_state.get('processed', False):
     st.subheader("Download Full JSON Response:")
     json_file_name = st.text_input("Enter JSON file name (without .json extension)", value='textract_response')
     
-    with open(response_json_path, 'rb') as f:
-        st.download_button(
-            label="Download JSON",
-            data=f,
-            file_name=f"{json_file_name}.json" if json_file_name else 'textract_response.json',
-            mime='application/json'
-        )
+    if st.button("Download JSON"):
+        with open(response_json_path, 'rb') as f:
+            st.download_button(
+                label="Download JSON",
+                data=f,
+                file_name=f"{json_file_name}.json" if json_file_name else 'textract_response.json',
+                mime='application/json'
+            )
+        # Clear session state after download to prevent reprocessing
+        st.session_state.processed = False
+        st.session_state.response_json_path = None
+        st.session_state.simplified_response = None
+        st.session_state.tables = None
 
     # Now display the extracted information
     st.subheader("Detected Tables:")
